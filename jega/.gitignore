@@ -1,0 +1,9 @@
+node_modules/
+functions/node_modules/
+functions/.env.local
+functions/.secret.local
+service-account*.json
+*.log
+.firebase/
+.DS_Store
+test/out/

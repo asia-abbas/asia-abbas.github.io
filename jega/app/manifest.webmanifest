@@ -1,0 +1,31 @@
+{
+  "name": "Jêga · جێگا",
+  "short_name": "Jêga",
+  "description": "Rent parking slots by the hour or at a flat price. Find a spot or list yours.",
+  "id": "./",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#ECEEF0",
+  "theme_color": "#F2B705",
+  "lang": "en",
+  "dir": "auto",
+  "prefer_related_applications": false,
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
+  "categories": ["travel", "navigation", "lifestyle"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Find parking", "short_name": "Park", "url": "./?tab=park", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "My slots", "short_name": "Host", "url": "./?tab=host", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Chats", "short_name": "Chats", "url": "./?tab=chats", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Account", "short_name": "Account", "url": "./?tab=me", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
+  ]
+}

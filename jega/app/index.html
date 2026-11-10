@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Jêga · جێگا</title>
+  <meta name="description" content="Rent parking slots by the hour or at a flat price. Find a spot or list yours.">
+  <meta name="application-name" content="Jêga">
+  <meta name="theme-color" content="#F2B705" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111519" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="./icons/icon-512.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="./icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Jêga">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600&family=Noto+Kufi+Arabic:wght@600;800&family=Noto+Sans+Arabic:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+  <div id="netbar" hidden></div>
+  <div id="alerts" aria-live="polite"></div>
+  <div id="app"><div class="center hint">…</div></div>
+  <div id="layer"></div>
+  <noscript>Jêga needs JavaScript.</noscript>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

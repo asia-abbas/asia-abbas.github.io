@@ -1,0 +1,115 @@
+rules_version = '2';
+
+// Jêga access tree
+//   driver / host  -> phone account (custom token, claim role == "user")
+//   admin          -> email account with custom claim admin == true (set by scripts/make-admin.mjs)
+// Money and booking state are written only by Cloud Functions (Admin SDK bypasses these rules).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isAdmin()  { return signedIn() && request.auth.token.admin == true; }
+    function isUser()   { return signedIn() && request.auth.token.role == "user"; }
+    function me()       { return request.auth.uid; }
+    function notBlocked() {
+      return !exists(/databases/$(database)/documents/users/$(me()))
+        || get(/databases/$(database)/documents/users/$(me())).data.blocked != true;
+    }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+    // ---------- app config (commission, announcement) ----------
+    match /config/{doc} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      allow read: if (isUser() && me() == uid) || isAdmin();
+      // created by phoneLogin function; the user may only edit profile fields
+      allow update: if isUser() && me() == uid && onlyChanges(["name", "lang", "fcmTokens", "notifyPush", "updatedAt"]);
+      allow write: if isAdmin();
+
+      match /notifications/{nid} {
+        allow read: if (isUser() && me() == uid) || isAdmin();
+        allow update: if isUser() && me() == uid && onlyChanges(["read"]);
+        allow delete: if isUser() && me() == uid;
+      }
+    }
+
+    // ---------- parking slots ----------
+    function validSlot(d) {
+      return d.title is string && d.title.size() >= 4 && d.title.size() <= 60
+        && d.landmark is string && d.landmark.size() <= 120
+        && d.area is string
+        && d.mode in ["hour", "flat"]
+        && d.price is int && d.price >= 250 && d.price <= 10000000
+        && d.maxH is int && d.maxH >= 1 && d.maxH <= 24
+        && d.lat is number && d.lng is number
+        && d.feat is list && d.feat.size() <= 10;
+    }
+    match /slots/{slotId} {
+      allow read: if signedIn();
+      allow create: if isUser() && notBlocked()
+        && request.resource.data.hostUid == me()
+        && request.resource.data.status == "active"
+        && validSlot(request.resource.data);
+      // hosts can edit and hide/show (active) but never change status (set by admin) or owner
+      allow update: if isUser() && notBlocked() && resource.data.hostUid == me()
+        && request.resource.data.hostUid == me()
+        && request.resource.data.status == resource.data.status
+        && validSlot(request.resource.data);
+      allow delete: if isUser() && resource.data.hostUid == me();
+      allow write: if isAdmin();
+    }
+
+    // ---------- bookings (functions only) ----------
+    match /bookings/{bookingId} {
+      allow read: if (isUser() && (resource.data.driverUid == me() || resource.data.hostUid == me())) || isAdmin();
+      allow write: if false;
+    }
+
+    // ---------- payments (functions only) ----------
+    match /payments/{paymentId} {
+      allow read: if (isUser() && resource.data.driverUid == me()) || isAdmin();
+      allow write: if false;
+    }
+
+    // ---------- chat ----------
+    match /chats/{chatId} {
+      // `resource == null` lets the app check whether a thread exists before creating it
+      allow get: if (isUser() && (resource == null || me() in resource.data.members)) || isAdmin();
+      allow list: if (isUser() && me() in resource.data.members) || isAdmin();
+      allow create: if isUser() && notBlocked()
+        && me() in request.resource.data.members
+        && request.resource.data.members.size() == 2;
+      // members may only reset their own unread counter
+      allow update: if isUser() && me() in resource.data.members && onlyChanges(["unread"]);
+
+      match /messages/{mid} {
+        allow read: if (isUser() && me() in get(/databases/$(database)/documents/chats/$(chatId)).data.members) || isAdmin();
+        allow create: if isUser() && notBlocked()
+          && me() in get(/databases/$(database)/documents/chats/$(chatId)).data.members
+          && request.resource.data.from == me()
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 1000;
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ---------- reports from users ----------
+    match /reports/{rid} {
+      allow create: if isUser() && request.resource.data.by == me()
+        && request.resource.data.reason is string && request.resource.data.reason.size() <= 500;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ---------- admin-only ----------
+    match /alerts/{aid}      { allow read, write: if isAdmin(); }
+    match /broadcasts/{bid}  { allow read, write: if isAdmin(); }
+    match /admins/{uid}      { allow read, write: if isAdmin() && me() == uid; }
+    match /auditLog/{id}     { allow read: if isAdmin(); allow write: if false; }
+    match /rateLimits/{id}   { allow read, write: if false; }
+  }
+}
