@@ -1,5 +1,7 @@
 import { LANGS, AREAS, FEATS, t, tx, setLang, getLang, dirOf } from "./i18n.js";
-import { auth, db, authMod, fs, call, enablePush, disablePush, onForegroundPush } from "./fb.js";
+import { auth, db, authMod, fs, onForegroundPush } from "./fb.js";
+import { call, sendMessage, alertAdmins } from "./backend.js";
+import { render as renderMsg, money } from "./messages.js";
 import { MAP_CENTER, MAP_ZOOM } from "./config.js";
 import { heroSVG } from "./hero.js";
 
@@ -41,6 +43,15 @@ const areaName = (k) => tx(AREAS, k);
 const featName = (k) => tx(FEATS, k);
 const isMine = (s) => st.user && s.hostUid === st.user.uid;
 const costOf = (s, h) => (s.mode === "flat" ? s.price : s.price * h);
+// past confirmed bookings show as completed (there is no server clock to flip them any more)
+const statusOf = (b) => (b.status === "confirmed" && tsMs(b.endAt) && tsMs(b.endAt) <= Date.now() ? "completed" : b.status);
+// notifications are stored as type + vars and rendered in the reader's language
+function nText(n) {
+  if (n.title) return { title: n.title, body: n.body || "" };
+  const v = { ...(n.vars || {}) };
+  if (typeof v.total === "number") v.total = money(v.total, getLang());
+  return renderMsg(n.type, getLang(), v);
+}
 function km(a, b) {
   const R = 6371, r = (x) => (x * Math.PI) / 180;
   const d = Math.sin(r(b[0] - a[0]) / 2) ** 2 + Math.cos(r(a[0])) * Math.cos(r(b[0])) * Math.sin(r(b[1] - a[1]) / 2) ** 2;
@@ -180,7 +191,8 @@ function alertBanner(id, n) {
   const box = $("#alerts");
   const el = document.createElement("button");
   el.className = "alert " + (n.priority === "high" ? "high" : "");
-  el.innerHTML = `${ICON.bell}<span><b>${esc(n.title)}</b><small>${esc(n.body)}</small></span>`;
+  const nt = nText(n);
+  el.innerHTML = `${ICON.bell}<span><b>${esc(nt.title)}</b><small>${esc(nt.body)}</small></span>`;
   el.onclick = () => { el.remove(); openNotif({ id, ...n }); };
   box.prepend(el);
   if (navigator.vibrate && n.priority === "high") navigator.vibrate([80, 40, 80]);
@@ -275,8 +287,7 @@ function renderLogin() {
     const name = $("#nm").value.trim();
     $("#lgo").disabled = true; $("#le").textContent = "";
     try {
-      const r = await call("phoneLogin")({ phone: "0" + digits, name, lang: getLang() });
-      await authMod.signInWithCustomToken(auth, r.data.token);
+      await call("phoneLogin")({ phone: "0" + digits, name, lang: getLang() });
     } catch (err) {
       $("#le").textContent = errText(err);
       $("#lgo").disabled = false;
@@ -374,7 +385,7 @@ function openSlot(id) {
   let hours = Math.min(2, maxH), pay = "cash";
   const open = s.allDay ? 0 : Math.ceil(parseFloat(s.opens.replace(":", ".")));
   const close = s.allDay ? 24 : (s.closes === "00:00" ? 24 : parseInt(s.closes, 10));
-  const onlineOk = st.config.onlinePayments !== false;
+  const onlineOk = false; // online payment (FuratPay) needs Cloud Functions on the Blaze plan
   sheet(`
     <div class="stack">
       <div class="slot-head"><div class="code">${esc(s.code)}</div>
@@ -436,8 +447,7 @@ function openSlot(id) {
     try {
       const r = await call("createBooking")({ slotId: s.id, date, start, hours, payMethod: pay });
       closeSheet();
-      if (r.data.status === "pending_payment") openPay(r.data.bookingId);
-      else { toast(t("status_confirmed"), "ok"); openBooking(r.data.bookingId); }
+      toast(t("status_confirmed"), "ok"); openBooking(r.data.bookingId);
     } catch (e) {
       $("#be").textContent = errText(e, { n: maxH });
       $("#book").disabled = false;
@@ -454,40 +464,9 @@ function openReport(s) {
     const reason = $("#rr").value.trim();
     if (reason.length < 3) return;
     await addDoc(collection(db, "reports"), { by: st.user.uid, targetType: "slot", targetId: s.id, targetLabel: `${s.code} ${s.title}`, reason, at: serverTimestamp() });
+    alertAdmins("report", { slotId: s.id, summary: `slot ${s.code} ${s.title}: ${reason}`.slice(0, 300) }, "warning").catch(() => {});
     closeSheet(); toast(t("reportSent"), "ok");
   };
-}
-
-/* ---- online payment (FuratPay) ---- */
-async function openPay(bookingId) {
-  sheet(`<div class="stack"><h2>${t("chooseService")}</h2><div id="svc" class="hint">${t("loading")}</div></div>`);
-  try {
-    const r = await call("paymentServices")({});
-    const b = st.myBookings.find((x) => x.id === bookingId);
-    const mins = st.config.pendingPaymentMinutes || 15;
-    $("#svc").outerHTML = `
-      ${r.data.testMode ? `<p class="note warn">${t("testMode")}</p>` : ""}
-      <p class="hint">${t("holdNote", { m: mins })}</p>
-      <div class="svcs">${r.data.services.map((s) => `<button class="svc" data-svc="${esc(s.id)}">${s.logo ? `<img src="${esc(s.logo)}" alt="">` : ""}<b>${esc(s.name)}</b></button>`).join("")}</div>
-      ${b ? `<div class="total"><span>${esc(b.slotCode)} · ${esc(when(b))}</span><b>${iqd(b.total)}</b></div>` : ""}
-      <div class="err" id="pe" role="alert"></div>`;
-    $$("[data-svc]").forEach((btn) => (btn.onclick = async () => {
-      $$("[data-svc]").forEach((x) => (x.disabled = true));
-      try {
-        const p = await call("startPayment")({ bookingId, serviceId: btn.dataset.svc });
-        // ("noopener" would make window.open return null even on success, so detach the opener by hand)
-        const w = window.open(p.data.url, "_blank");
-        if (w) w.opener = null;
-        else location.href = p.data.url;   // popup blocked (common in installed PWAs): go there directly; we return via ?booking=
-        openBooking(bookingId, p.data);
-      } catch (e) {
-        $("#pe").textContent = errText(e);
-        $$("[data-svc]").forEach((x) => (x.disabled = false));
-      }
-    }));
-  } catch (e) {
-    $("#svc").textContent = errText(e);
-  }
 }
 
 /* ---- booking detail (also the "waiting for payment" screen) ---- */
@@ -502,7 +481,7 @@ function openBooking(id, payInfo) {
     const canCancel = driver && ["pending_payment", "confirmed"].includes(b.status) && tsMs(b.startAt) > Date.now() && b.paymentStatus !== "paid";
     sheet(`<div class="stack">
       <div class="slot-head"><div class="code">${esc(b.slotCode)}</div><div class="grow"><h2 dir="auto">${esc(b.slotTitle)}</h2><div class="hint" dir="auto">${esc(b.landmark)}</div></div></div>
-      <div><span class="status s-${b.status}">${t("status_" + b.status)}</span>
+      <div><span class="status s-${statusOf(b)}">${t("status_" + statusOf(b))}</span>
         ${b.paymentStatus === "paid" ? `<span class="status s-confirmed">${t("paidOnline")}</span>` : b.payMethod === "cash" ? `<span class="status">${t("payCash")}</span>` : ""}</div>
       ${pend ? `<div class="paywait"><div class="spinner" aria-hidden="true"></div><b>${t("waitingPay")}</b><p class="hint">${t("waitingPaySub")}</p>
         <div class="mono countdown" id="cd">${t("timeLeft", { m: Math.floor(left / 60000), s: pad2(Math.floor(left / 1000) % 60) })}</div>
@@ -522,7 +501,6 @@ function openBooking(id, payInfo) {
     </div>`, stopWatch);
     if (b.lat && window.L) smallMap($("#bmap"), b.lat, b.lng);
     $("#bchat").onclick = () => { closeSheet(); st.chat = `${b.slotId}_${b.driverUid}`; render(); };
-    if ($("#repay")) $("#repay").onclick = () => openPay(id);
     if ($("#bcancel")) $("#bcancel").onclick = () => confirmBox(t("cancelConfirm"), t("yesCancel"), async () => {
       try { await call("cancelBooking")({ bookingId: id }); toast(t("status_cancelled")); } catch (e) { toast(errText(e), "bad"); }
     });
@@ -541,12 +519,11 @@ function openBooking(id, payInfo) {
       const left = Math.max(0, tsMs(last.expiresAt) - Date.now());
       const el = $("#cd"); if (el) el.textContent = t("timeLeft", { m: Math.floor(left / 60000), s: pad2(Math.floor(left / 1000) % 60) });
     }, 1000),
-    poll: setInterval(() => { if (last?.status === "pending_payment") call("checkPayment")({ bookingId: id }).catch(() => {}); }, 5000),
   };
 }
 function stopWatch() {
   if (!bookingWatch) return;
-  bookingWatch.unsub(); clearInterval(bookingWatch.tick); clearInterval(bookingWatch.poll); bookingWatch = null;
+  bookingWatch.unsub(); clearInterval(bookingWatch.tick); bookingWatch = null;
 }
 
 /* ================= host ================= */
@@ -574,7 +551,7 @@ function viewHost() {
 function bookingRow(b) {
   const other = b.driverUid === st.user.uid ? b.hostName : b.driverName;
   return `<button class="booking" data-booking="${b.id}"><div class="grow"><b class="mono">${LTR(b.slotCode)}</b> · ${esc(other)}
-    <div class="hint">${LTR(when(b))} · ${iqd(b.total)}</div></div><span class="status s-${b.status}">${t("status_" + b.status)}</span></button>`;
+    <div class="hint">${LTR(when(b))} · ${iqd(b.total)}</div></div><span class="status s-${statusOf(b)}">${t("status_" + statusOf(b))}</span></button>`;
 }
 
 function openSlotForm(existing) {
@@ -641,7 +618,8 @@ function openSlotForm(existing) {
         toast(t("saved"), "ok");
       } else {
         const code = (AREAS[area].en[0] || "X").toUpperCase() + "-" + (10 + Math.floor(Math.random() * 89));
-        await addDoc(collection(db, "slots"), { ...data, code, hostUid: st.user.uid, active: true, status: "active", createdAt: serverTimestamp() });
+        const ref = await addDoc(collection(db, "slots"), { ...data, code, hostUid: st.user.uid, active: true, status: "active", createdAt: serverTimestamp() });
+        alertAdmins("new_slot", { slotId: ref.id, summary: `${code} · ${title} · ${st.profile.name}` }).catch(() => {});
         toast(t("live", { c: code }), "ok");
       }
       closeSheet();
@@ -691,7 +669,7 @@ function renderChat() {
       <button class="back" id="cb">${ICON.back}${t("back")}</button>
       <div class="end"><b>${esc(c ? chatName(c) : "")}</b><div class="hint mono">${LTR(c?.slotCode || "")}</div></div>
     </header>
-    <div class="msgs pad">${chatMsgs.map((m) => `<div class="msg ${m.from === "system" ? "sys" : m.from === st.user.uid ? "me" : "them"}" dir="auto">${esc(m.text)}<time>${stamp(tsMs(m.at))}</time></div>`).join("")}</div>
+    <div class="msgs pad">${chatMsgs.map((m) => `<div class="msg ${m.from === "system" || m.type === "booking" ? "sys" : m.from === st.user.uid ? "me" : "them"}" dir="auto">${esc(m.text)}<time>${stamp(tsMs(m.at))}</time></div>`).join("")}</div>
     <div class="composer"><form id="cf" class="pad"><input id="ci" class="input" placeholder="${t("write")}" autocomplete="off" aria-label="${t("write")}" dir="auto" maxlength="1000"><button class="send" aria-label="${t("send")}">${ICON.send}</button></form></div>`;
   $("#ci").value = draft; if (focused) $("#ci").focus();
   $("#cb").onclick = () => { chatUnsub?.(); chatUnsub = null; chatFor = null; st.chat = null; st.tab = "chats"; render(); };
@@ -699,7 +677,7 @@ function renderChat() {
     e.preventDefault();
     const text = $("#ci").value.trim(); if (!text) return;
     $("#ci").value = "";
-    await addDoc(collection(db, "chats", st.chat, "messages"), { from: st.user.uid, text, at: serverTimestamp() });
+    await sendMessage(st.chat, text, c?.members.find((u) => u !== st.user.uid)).catch((err) => { $("#ci").value = text; toast(errText(err), "bad"); });
   };
   if (atBottom || focused) scrollTo(0, document.body.scrollHeight);
 }
@@ -708,12 +686,8 @@ function renderChat() {
 function viewMe() {
   const isIos = isIosDevice();
   const standalone = isStandalone();
-  const pushOn = st.profile.notifyPush !== false && "Notification" in window && Notification.permission === "granted" && LS.get("jega.fcm", "");
-  const denied = "Notification" in window && Notification.permission === "denied";
   return `<div class="card profile"><div class="avatar lg">${initials(st.profile.name)}</div>
       <div class="grow"><input id="pn" class="input bare-input" value="${esc(st.profile.name)}" aria-label="${t("name")}" maxlength="40"><div class="mono hint">${LTR(st.profile.phonePretty)}</div></div></div>
-    <div class="card setting"><div class="grow"><b>${t("pushOn")}</b><p class="hint">${denied ? t("pushBlocked") : isIos && !standalone ? t("pushIos") : t("pushSub")}</p></div>
-      <label class="sw"><input type="checkbox" id="push" ${pushOn ? "checked" : ""} ${denied || (isIos && !standalone) ? "disabled" : ""}><span></span></label></div>
     ${!standalone ? `<button class="card setting tap" id="inst"><div class="grow"><b>${t("install")}</b><p class="hint">${!st.installEvt && isIos ? t("installIos") : t("installSub")}</p></div>${ICON.install}</button>` : ""}
     <span class="label">${t("language")}</span>${langGrid()}
     <span class="label mt">${t("myBookings")}</span>
@@ -726,7 +700,7 @@ function openNotifs() {
   const draw = () => sheet(`<div class="stack">
     <div class="row-between"><h2>${t("notifs")}</h2>${st.notifs.some((n) => !n.read) ? `<button class="linkbtn" id="nall">${t("markAllRead")}</button>` : ""}</div>
     ${st.notifs.length ? `<div class="notifs">${st.notifs.map((n) => `<button class="notif ${n.read ? "" : "unread"}" data-n="${n.id}">
-      <span class="grow"><b>${esc(n.title)}</b><small>${esc(n.body)}</small></span><time class="mono">${stamp(tsMs(n.at))}</time></button>`).join("")}</div>`
+      <span class="grow"><b>${esc(nText(n).title)}</b><small>${esc(nText(n).body)}</small></span><time class="mono">${stamp(tsMs(n.at))}</time></button>`).join("")}</div>`
       : `<div class="empty">${t("noNotifs")}</div>`}</div>`);
   draw();
   $$("[data-n]").forEach((b) => (b.onclick = () => openNotif(st.notifs.find((n) => n.id === b.dataset.n))));
@@ -781,21 +755,14 @@ function bindCommon() {
   $$("[data-view]").forEach((b) => (b.onclick = () => { st.view = b.dataset.view; render(); }));
   $$("[data-chat]").forEach((b) => (b.onclick = () => { st.chat = b.dataset.chat; render(); }));
   $$("[data-booking]").forEach((b) => (b.onclick = () => {
-    const bk = [...st.myBookings, ...st.hostBookings].find((x) => x.id === b.dataset.booking);
-    if (bk?.status === "pending_payment" && bk.driverUid === st.user.uid) openPay(bk.id); else openBooking(b.dataset.booking);
+    openBooking(b.dataset.booking);
   }));
   $$("[data-edit]").forEach((b) => (b.onclick = () => openSlotForm(st.mySlots.find((s) => s.id === b.dataset.edit))));
   $$("[data-toggle]").forEach((i) => (i.onchange = () => updateDoc(doc(db, "slots", i.dataset.toggle), { active: i.checked }).catch((e) => toast(errText(e), "bad"))));
   if (st.tab === "me") {
     bindLang();
-    $("#out").onclick = async () => { await disablePush(st.user.uid).catch(() => {}); authMod.signOut(auth); };
+    $("#out").onclick = () => authMod.signOut(auth);
     $("#pn").onchange = () => { const v = $("#pn").value.trim(); if (v.length >= 2) updateDoc(doc(db, "users", st.user.uid), { name: v }).then(() => toast(t("saved"), "ok")); };
-    $("#push").onchange = async (e) => {
-      if (e.target.checked) {
-        const r = await enablePush(st.user.uid, st.swReg).catch(() => "unsupported");
-        if (r !== "on") { e.target.checked = false; toast(r === "denied" ? t("pushBlocked") : t("genericErr"), "bad"); }
-      } else await disablePush(st.user.uid);
-    };
     if ($("#inst")) $("#inst").onclick = triggerInstall;
   }
   const q = $("#q");

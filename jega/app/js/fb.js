@@ -5,24 +5,20 @@ const base = `https://www.gstatic.com/firebasejs/${V}`;
 const { initializeApp } = await import(`${base}/firebase-app.js`);
 const authMod = await import(`${base}/firebase-auth.js`);
 const fs = await import(`${base}/firebase-firestore.js`);
-const fnMod = await import(`${base}/firebase-functions.js`);
-import { firebaseConfig, FUNCTIONS_REGION, USE_EMULATORS, VAPID_KEY } from "./config.js";
+import { firebaseConfig, USE_EMULATORS, VAPID_KEY } from "./config.js";
 
 export const app = initializeApp(firebaseConfig);
 export const auth = authMod.getAuth(app);
 export const db = fs.initializeFirestore(app, {
   localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
 });
-export const functions = fnMod.getFunctions(app, FUNCTIONS_REGION);
 
 if (USE_EMULATORS) {
   authMod.connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
   fs.connectFirestoreEmulator(db, "127.0.0.1", 8080);
-  fnMod.connectFunctionsEmulator(functions, "127.0.0.1", 5001);
 }
 
 export { authMod, fs };
-export const call = (name) => fnMod.httpsCallable(functions, name);
 
 /** Turn on push alerts for this device. Returns "on" | "denied" | "unsupported". */
 export async function enablePush(uid, swReg) {

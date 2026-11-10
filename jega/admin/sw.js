@@ -1,8 +1,8 @@
 // Jêga Admin service worker: installable PWA, offline app shell, and FCM push alerts
 // (payment failures, reports, new slots) while the dashboard is closed.
 // Bump VERSION whenever you deploy changed admin files.
-const VERSION = "jega-admin-v2";
-const RUNTIME = "jega-admin-runtime-v2";
+const VERSION = "jega-admin-v3";
+const RUNTIME = "jega-admin-runtime-v3";
 const SHELL = [
   "/", "/index.html", "/css/admin.css", "/js/admin.js", "/js/firebase-config.js",
   "/manifest.webmanifest", "/favicon.png", "/icons/icon-192.png", "/icons/icon-512.png", "/icons/maskable-512.png", "/icons/badge-72.png",

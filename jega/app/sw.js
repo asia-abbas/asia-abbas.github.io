@@ -1,9 +1,9 @@
 // Jêga service worker: offline app shell + runtime asset caching + Firebase Cloud Messaging (background push).
 // Bump VERSION whenever you deploy changed app files so phones pick them up.
-const VERSION = "jega-v2";
-const RUNTIME = "jega-runtime-v2";
+const VERSION = "jega-v6";
+const RUNTIME = "jega-runtime-v6";
 const SHELL = [
-  "./", "./index.html", "./css/app.css", "./js/app.js", "./js/i18n.js", "./js/fb.js", "./js/config.js", "./js/firebase-config.js", "./js/hero.js",
+  "./", "./index.html", "./css/app.css", "./js/app.js", "./js/i18n.js", "./js/fb.js", "./js/config.js", "./js/firebase-config.js", "./js/hero.js", "./js/backend.js", "./js/messages.js",
   "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/maskable-512.png", "./icons/badge-72.png",
 ];
 const CDN_HOSTS = new Set(["unpkg.com", "fonts.googleapis.com", "fonts.gstatic.com", "tile.openstreetmap.org"]);

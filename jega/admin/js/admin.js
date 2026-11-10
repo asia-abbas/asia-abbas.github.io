@@ -5,16 +5,108 @@ const V = "10.12.2", base = `https://www.gstatic.com/firebasejs/${V}`;
 const { initializeApp } = await import(`${base}/firebase-app.js`);
 const A = await import(`${base}/firebase-auth.js`);
 const F = await import(`${base}/firebase-firestore.js`);
-const FN = await import(`${base}/firebase-functions.js`);
 
-const REGION = "europe-west1";
 const VAPID_KEY = "PASTE_WEB_PUSH_KEY_PAIR"; // same key as app/js/config.js
 const app = initializeApp(self.FIREBASE_CONFIG);
 const auth = A.getAuth(app);
 const db = F.getFirestore(app);
-const fns = FN.getFunctions(app, REGION);
-const call = (n) => FN.httpsCallable(fns, n);
 const { collection, doc, query, where, orderBy, limit, onSnapshot, getDocs, getDoc, setDoc, updateDoc, Timestamp, getCountFromServer, getAggregateFromServer, sum } = F;
+
+/* ---------------- admin actions ----------------
+   On the free Spark plan there are no Cloud Functions: the dashboard writes directly, as the admin.
+   firestore.rules lets only accounts with the admin claim do these writes. */
+const pad = (n) => String(n).padStart(2, "0");
+const whenText = (b) => `${b.date} ${pad(b.start)}:00–${pad(b.start + b.hours)}:00`;
+const maskOf = (start, hours) => (2 ** hours - 1) * 2 ** start;
+const audit = (batch, action, data) => batch.set(doc(collection(db, "auditLog")), { adminUid: S.user.uid, action, data, at: F.serverTimestamp() });
+const notifyIn = (batch, uid, type, vars, opts = {}) => batch.set(doc(collection(db, "users", uid, "notifications")), {
+  type, vars, link: opts.link || "/", priority: opts.priority || "normal", read: false, at: F.serverTimestamp(), from: S.user.uid,
+});
+const ACTIONS = {
+  /** Suspend or restore a slot. The host is notified with the reason. */
+  async adminSetSlotStatus({ slotId, status, reason = "" }) {
+    const ref = doc(db, "slots", slotId);
+    const s = (await getDoc(ref)).data();
+    if (!s) throw new Error("no-slot");
+    const batch = F.writeBatch(db);
+    batch.update(ref, { status, statusReason: reason, statusAt: F.serverTimestamp() });
+    notifyIn(batch, s.hostUid, status === "suspended" ? "slot_suspended" : "slot_restored",
+      { code: s.code, reason: reason || "Contact Jêga support for details." }, { link: "/?tab=host", priority: "high" });
+    audit(batch, "slot_status", { slotId, status, reason });
+    await batch.commit();
+    return { ok: true };
+  },
+  /** Block or unblock a user. The app signs a blocked user out and the rules stop their writes; their slots are suspended. */
+  async adminSetUserBlocked({ uid, blocked }) {
+    const slots = await getDocs(query(collection(db, "slots"), where("hostUid", "==", uid)));
+    const batch = F.writeBatch(db);
+    batch.update(doc(db, "users", uid), { blocked: !!blocked, blockedAt: F.serverTimestamp() });
+    slots.docs.forEach((d) => batch.update(d.ref, { status: blocked ? "suspended" : "active", statusReason: blocked ? "Account blocked" : "" }));
+    audit(batch, "user_blocked", { uid, blocked: !!blocked });
+    await batch.commit();
+    return { ok: true };
+  },
+  /** Cancel any booking and free its hours. Paid bookings are flagged for refund. */
+  async adminCancelBooking({ bookingId, reason = "" }) {
+    const ref = doc(db, "bookings", bookingId);
+    let b;
+    await F.runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref);
+      b = snap.data();
+      if (!b) throw new Error("no-booking");
+      if (!["pending_payment", "confirmed"].includes(b.status)) throw new Error("not-active");
+      const dayRef = doc(db, "slotDays", `${b.slotId}_${b.date}`);
+      const day = await tx.get(dayRef);
+      tx.update(ref, {
+        status: "cancelled", cancelledBy: "admin", cancelReason: reason, cancelledAt: F.serverTimestamp(),
+        ...(b.paymentStatus === "paid" ? { refund: "needed" } : {}),
+      });
+      if (b.status === "confirmed" && day.exists()) {
+        tx.set(dayRef, { slotId: b.slotId, date: b.date, taken: (day.data().taken || 0) - maskOf(b.start, b.hours), lastBooking: bookingId });
+      }
+    });
+    const batch = F.writeBatch(db);
+    const vars = { code: b.slotCode, when: whenText(b), reason };
+    notifyIn(batch, b.driverUid, "booking_cancelled", vars, { link: `/?booking=${bookingId}`, priority: "high" });
+    notifyIn(batch, b.hostUid, "booking_cancelled", vars, { link: "/?tab=host" });
+    audit(batch, "booking_cancel", { bookingId, reason });
+    await batch.commit();
+    return { ok: true };
+  },
+  /** Mark a refund as done after you've returned the money. */
+  async adminMarkRefunded({ bookingId, note = "" }) {
+    const batch = F.writeBatch(db);
+    batch.update(doc(db, "bookings", bookingId), { refund: "done", refundNote: note, refundedAt: F.serverTimestamp() });
+    audit(batch, "refund", { bookingId, note });
+    await batch.commit();
+    return { ok: true };
+  },
+  /** In-app announcement to all users, only hosts, or only drivers. */
+  async adminBroadcast({ title, body, audience = "all" }) {
+    if (!title || !body) throw new Error("need-text");
+    const slots = await getDocs(collection(db, "slots"));
+    const hosts = new Set(slots.docs.map((d) => d.data().hostUid));
+    let uids;
+    if (audience === "hosts") uids = [...hosts];
+    else {
+      const u = await getDocs(query(collection(db, "users"), where("blocked", "==", false)));
+      uids = u.docs.map((d) => d.id);
+      if (audience === "drivers") uids = uids.filter((x) => !hosts.has(x));
+    }
+    for (let i = 0; i < uids.length; i += 400) {
+      const batch = F.writeBatch(db);
+      uids.slice(i, i + 400).forEach((u) => notifyIn(batch, u, "broadcast", { title, body }, { link: "/?tab=me" }));
+      await batch.commit();
+    }
+    const batch = F.writeBatch(db);
+    batch.set(doc(collection(db, "broadcasts")), { title, body, audience, count: uids.length, by: S.user.uid, at: F.serverTimestamp() });
+    audit(batch, "broadcast", { audience, count: uids.length });
+    await batch.commit();
+    return { sent: uids.length };
+  },
+};
+/** Same shape as the old httpsCallable: call("name")(data) -> { data } */
+const call = (n) => async (d) => ({ data: await ACTIONS[n](d || {}) });
 
 /* ---------------- helpers ---------------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -344,7 +436,7 @@ async function payments(m) {
 
 /* ---------------- broadcast ---------------- */
 async function broadcast(m) {
-  m.innerHTML = `<header class="head"><h1>Broadcast</h1><span class="muted">Sends an in-app notification and a phone alert</span></header>
+  m.innerHTML = `<header class="head"><h1>Broadcast</h1><span class="muted">Sends an in-app notification to each user</span></header>
     <section class="grid2">
       <form class="panel form" id="bf">
         <label>Audience<select id="ba"><option value="all">Everyone</option><option value="hosts">Hosts only</option><option value="drivers">Drivers only</option></select></label>
