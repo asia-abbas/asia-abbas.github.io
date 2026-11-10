@@ -1,0 +1,40 @@
+# Publishes the Jêga customer app (jega/app) to the root of https://asia-abbas.github.io on every push to main.
+# One-time setup: repo Settings → Pages → Build and deployment → Source: "GitHub Actions".
+# The admin dashboard is NOT published here; it stays on https://jega-parking-1bf5-admin.web.app.
+name: Deploy Jêga app to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["jega/app/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare site
+        run: |
+          mkdir -p _site
+          cp -r jega/app/. _site/
+          cp _site/index.html _site/404.html   # unknown paths fall back to the app
+          touch _site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
