@@ -1,12 +1,12 @@
 {
   "projects": {
-    "default": "your-project-id"
+    "default": "jega-parking-1bf5"
   },
   "targets": {
-    "your-project-id": {
+    "jega-parking-1bf5": {
       "hosting": {
-        "app": ["your-project-id"],
-        "admin": ["your-project-id-admin"]
+        "app": ["jega-parking-1bf5"],
+        "admin": ["jega-parking-1bf5-admin"]
       }
     }
   }
